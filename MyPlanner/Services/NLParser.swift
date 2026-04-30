@@ -148,13 +148,16 @@ struct NLParser {
             // - If non-recurring, use detectorResult start + end (or default
             //   1 hour duration).
 
-            // Prefer the detector's time if it had one; otherwise use the
-            // first regex match.
+            // Prefer the regex's earliest match — our regex covers compact
+            // formats like "430p" that NSDataDetector misses, and using
+            // timeMatches.first guarantees we don't pick the *end* of a
+            // range as the start. Fall back to the detector if the regex
+            // found nothing.
             let timeOfDay: TimeOfDay?
-            if let r = detectorResult, r.hasTime {
-                timeOfDay = TimeOfDay(date: r.date)
-            } else if let first = timeMatches.first {
+            if let first = timeMatches.first {
                 timeOfDay = first.tod
+            } else if let r = detectorResult, r.hasTime {
+                timeOfDay = TimeOfDay(date: r.date)
             } else {
                 timeOfDay = nil
             }
@@ -505,23 +508,46 @@ struct NLParser {
         }
 
         // ---- 12-hour with am/pm/a/p ----
-        // Either (whitespace + am|pm)  OR  (no whitespace, am|pm|a|p).
-        // The no-whitespace branch is what makes "7a", "3:30p" work without
-        // catching false positives like "7 a" (which the with-space branch
-        // requires the full word for).
-        let p12 = #"\b(\d{1,2})(?::(\d{2}))?(?:\s+(am|pm)|(am|pm|a|p))\b"#
+        // Accepts:
+        //   - "7am", "11 am"             (1-2 digit hour, with marker)
+        //   - "7:30am", "11:30 pm"       (with explicit colon-minutes)
+        //   - "7a", "3:30p"              (short marker, no space)
+        //   - "430p", "1130am"           (compact HHMM with no colon)
+        // Group 1 is the leading digits (1-4); group 2 is the optional
+        // colon-minutes; groups 3/4 are the marker (group 3 = with-space
+        // form which requires full am/pm, group 4 = no-space short form).
+        // The with-space-then-am|pm branch is what blocks "7 a" from
+        // false-matching "7 days a week".
+        let p12 = #"\b(\d{1,4})(?::(\d{2}))?(?:\s+(am|pm)|(am|pm|a|p))\b"#
         if let re = try? NSRegularExpression(pattern: p12) {
             let nsRange = NSRange(lower.startIndex..<lower.endIndex, in: lower)
             re.enumerateMatches(in: lower, range: nsRange) { m, _, _ in
                 guard let m, let r = Range(m.range, in: lower) else { return }
                 let hRange = Range(m.range(at: 1), in: lower)!
-                var h = Int(lower[hRange]) ?? 0
-                guard h >= 1 && h <= 12 else { return }   // 13am etc. is bogus
-                var min = 0
+                let leadingDigits = String(lower[hRange])
+                let leadingValue = Int(leadingDigits) ?? 0
+
+                // Determine hour and minute.
+                var h: Int
+                var min: Int
                 if m.range(at: 2).location != NSNotFound,
                    let mr = Range(m.range(at: 2), in: lower) {
+                    // Explicit colon form: "7:30am" — group 1 is the hour.
+                    h = leadingValue
                     min = Int(lower[mr]) ?? 0
+                } else if leadingDigits.count <= 2 {
+                    // Bare "7am" / "11pm" — group 1 is the hour, no minutes.
+                    h = leadingValue
+                    min = 0
+                } else {
+                    // Compact "430p" / "1130am": last 2 digits are minutes.
+                    h = leadingValue / 100
+                    min = leadingValue % 100
                 }
+
+                // Validate. 12-hour clock: hour 1..12, minute 0..59.
+                guard h >= 1 && h <= 12, min >= 0 && min <= 59 else { return }
+
                 let marker: String = {
                     if m.range(at: 3).location != NSNotFound,
                        let r3 = Range(m.range(at: 3), in: lower) {

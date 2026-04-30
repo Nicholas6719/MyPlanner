@@ -255,6 +255,54 @@ struct NLParserTests {
         #expect(cal.component(.day, from: start) == 3)        // today
         #expect(cal.component(.hour, from: start) == 23)
     }
+
+    // MARK: - Compact HHMM time format ("430p", "1130am")
+
+    @Test func compactTimeWithShortMarker() {
+        // "Gym 430p" — short for 4:30pm.
+        let result = parse("Gym 430p")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 16)
+        #expect(cal.component(.minute, from: start) == 30)
+    }
+
+    @Test func compactTimeRange() {
+        // "Study for Math Test 430p-530p" — should be a 1-hour event from
+        // 4:30pm to 5:30pm.
+        let result = parse("Study for Math Test 430p-530p")
+        guard case let .event(title, start, end, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(title.localizedCaseInsensitiveContains("study"))
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 16)
+        #expect(cal.component(.minute, from: start) == 30)
+        #expect(cal.component(.hour, from: end) == 17)
+        #expect(cal.component(.minute, from: end) == 30)
+    }
+
+    @Test func compactTimeWithLongMarker() {
+        // "1130am" — eleven thirty AM.
+        let result = parse("Standup 1130am")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 11)
+        #expect(cal.component(.minute, from: start) == 30)
+    }
+
+    @Test func compactTimeRejectsInvalidHour() {
+        // "9999p" is bogus and must NOT match. This ensures the parser
+        // doesn't classify a number-heavy string as an event by accident.
+        let result = parse("Order 9999p widgets")
+        if case .event = result {
+            Issue.record("'9999p' should not match as a time")
+        }
+    }
 }
 
 // MARK: - Recurrence expansion tests

@@ -50,6 +50,13 @@ enum Theme {
     static let priorityMed  = Color(hex: "#fbbf24")
     static let priorityLow  = Color(hex: "#94a3b8")
 
+    /// Color used for events that don't have a category assigned. Visually
+    /// distinct from any default category color (especially the mint
+    /// `accent`, which the seeded "Work" category uses) so the user can
+    /// tell at a glance that something is uncategorized rather than
+    /// accidentally filed under Work.
+    static let uncategorized = Color(hex: "#64748b")    // slate
+
     // Standard radii / spacing
     enum Radius {
         static let card: CGFloat   = 12

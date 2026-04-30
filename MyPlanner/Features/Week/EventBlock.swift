@@ -16,7 +16,10 @@ struct EventBlock: View {
 
     private var color: Color {
         if let category { return Color(hex: category.colorHex) }
-        return Theme.accent
+        // Uncategorized: deliberately NOT the accent color (which is the
+        // Work category's color), so the user can tell uncategorized
+        // events apart from Work events at a glance.
+        return Theme.uncategorized
     }
 
     var body: some View {
