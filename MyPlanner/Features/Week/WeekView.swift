@@ -1,0 +1,167 @@
+//
+//  WeekView.swift
+//  MyPlanner
+//
+//  The Week tab. Shows the 7-day grid with events. Owns the visible week
+//  state and renders header controls (prev / next / today / range label).
+//
+
+import SwiftUI
+import SwiftData
+import Combine
+
+struct WeekView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var events: [Event]
+    @Query private var categories: [PlannerCategory]
+
+    @AppStorage(AppSettingsKeys.hourRangeStart) private var hourStart: Int = AppSettingsDefaults.hourRangeStart
+    @AppStorage(AppSettingsKeys.hourRangeEnd) private var hourEnd: Int = AppSettingsDefaults.hourRangeEnd
+
+    @State private var weekStart: Date = WeekView.startOfThisWeek()
+    @State private var now: Date = Date()
+    @State private var editingEvent: Event?
+    @State private var newEventDraft: Event?
+
+    // 60-second tick for the "now" line
+    private let nowTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+
+    private let cal = Calendar.current
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            grid
+        }
+        .background(Theme.bg)
+        .onReceive(nowTimer) { _ in now = Date() }
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    if value.translation.width < -50 { goToWeek(offset: 1) }
+                    else if value.translation.width > 50 { goToWeek(offset: -1) }
+                }
+        )
+        .sheet(item: $editingEvent) { event in
+            EventEditorView(event: event, isNew: false)
+        }
+        .sheet(item: $newEventDraft) { draft in
+            EventEditorView(event: draft, isNew: true)
+        }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button {
+                goToWeek(offset: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(Theme.surface2))
+            }
+            .buttonStyle(.plain)
+
+            Text(weekRangeLabel)
+                .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Theme.ink)
+                .headingKerning()
+                .frame(maxWidth: .infinity)
+
+            Button {
+                goToWeek(offset: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.inkSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(Theme.surface2))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                weekStart = WeekView.startOfThisWeek()
+            } label: {
+                Text("TODAY")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Theme.accentSoft))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Theme.Spacing.outer)
+        .padding(.vertical, 10)
+        .background(Theme.surface.opacity(0.4))
+    }
+
+    // MARK: - Grid
+
+    private var grid: some View {
+        let weekEnd = cal.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
+        let instances = Recurrence_.instances(of: events, from: weekStart, to: weekEnd)
+        return WeekGrid(weekStart: weekStart,
+                        hourStart: hourStart,
+                        hourEnd: hourEnd,
+                        instances: instances,
+                        categories: categories,
+                        now: now,
+                        onTapHour: handleTapHour,
+                        onTapEvent: handleTapEvent)
+    }
+
+    // MARK: - Actions
+
+    private func goToWeek(offset: Int) {
+        if let d = cal.date(byAdding: .day, value: 7 * offset, to: weekStart) {
+            weekStart = d
+        }
+    }
+
+    private func handleTapHour(_ hourDate: Date) {
+        let draft = Event(title: "",
+                          startDate: hourDate,
+                          endDate: hourDate.addingTimeInterval(3600))
+        newEventDraft = draft
+    }
+
+    private func handleTapEvent(_ inst: EventInstance) {
+        if let event = events.first(where: { $0.id == inst.eventID }) {
+            editingEvent = event
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var weekRangeLabel: String {
+        let weekEnd = cal.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
+        let f = DateFormatter()
+        if cal.component(.month, from: weekStart) == cal.component(.month, from: weekEnd) {
+            f.dateFormat = "MMM d"
+            let s = f.string(from: weekStart)
+            f.dateFormat = "d, yyyy"
+            let e = f.string(from: weekEnd)
+            return "\(s) – \(e)"
+        } else {
+            f.dateFormat = "MMM d"
+            let s = f.string(from: weekStart)
+            f.dateFormat = "MMM d, yyyy"
+            let e = f.string(from: weekEnd)
+            return "\(s) – \(e)"
+        }
+    }
+
+    /// First instant of the current Sunday (start of week per spec).
+    private static func startOfThisWeek() -> Date {
+        var cal = Calendar.current
+        cal.firstWeekday = 1   // 1 = Sunday
+        let now = Date()
+        let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+        return cal.date(from: comps) ?? cal.startOfDay(for: now)
+    }
+}
+

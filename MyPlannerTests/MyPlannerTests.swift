@@ -2,17 +2,177 @@
 //  MyPlannerTests.swift
 //  MyPlannerTests
 //
-//  Created by Nicholas Coppola on 4/30/26.
+//  Unit tests for the natural-language parser.
 //
 
 import Testing
+import Foundation
+@testable import MyPlanner
 
-struct MyPlannerTests {
+@MainActor
+struct NLParserTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+    /// Anchor "now" to a known weekday so tests are deterministic.
+    /// This is Sunday, May 3, 2026 at 09:00 local time.
+    private var fixedNow: Date {
+        var comps = DateComponents()
+        comps.year = 2026; comps.month = 5; comps.day = 3
+        comps.hour = 9; comps.minute = 0
+        return Calendar.current.date(from: comps)!
     }
 
+    private func parse(_ text: String) -> ParsedInput {
+        NLParser.parse(text, now: fixedNow)
+    }
+
+    // MARK: - Spec cases
+
+    @Test func workingMondayRange() {
+        let result = parse("Working Monday 7am to 3:30pm")
+        guard case let .event(title, start, end, recurrence, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(title.localizedCaseInsensitiveContains("working"))
+        #expect(recurrence == nil)
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 7)
+        #expect(cal.component(.minute, from: start) == 0)
+        #expect(cal.component(.hour, from: end) == 15)
+        #expect(cal.component(.minute, from: end) == 30)
+        // Monday is weekday 2 (1=Sunday)
+        #expect(cal.component(.weekday, from: start) == 2)
+    }
+
+    @Test func mathHomeworkDueFriday() {
+        let result = parse("Math homework due Friday")
+        guard case let .task(title, due, _) = result else {
+            Issue.record("Expected task, got \(result)"); return
+        }
+        #expect(title.localizedCaseInsensitiveContains("math"))
+        #expect(title.localizedCaseInsensitiveContains("homework"))
+        #expect(due != nil)
+        let cal = Calendar.current
+        if let due { #expect(cal.component(.weekday, from: due) == 6) }   // Friday = 6
+    }
+
+    @Test func recurringTueThu() {
+        let result = parse("Every Tuesday and Thursday 11am to 2pm class")
+        guard case let .event(_, start, end, recurrence, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(recurrence != nil)
+        if let r = recurrence {
+            #expect(r.byDay.contains(2) && r.byDay.contains(4))
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 11)
+        #expect(cal.component(.hour, from: end) == 14)
+    }
+
+    @Test func doctorAppointmentSpecificDate() {
+        let result = parse("Doctor appointment Nov 15 at 2pm")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.month, from: start) == 11)
+        #expect(cal.component(.day, from: start) == 15)
+        #expect(cal.component(.hour, from: start) == 14)
+    }
+
+    @Test func gymTomorrowAt6() {
+        let result = parse("gym tomorrow at 6pm")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(Calendar.current.component(.hour, from: start) == 18)
+    }
+
+    @Test func everyMondayGym() {
+        let result = parse("every monday gym 7am")
+        guard case let .event(_, start, _, recurrence, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(recurrence != nil)
+        if let r = recurrence { #expect(r.byDay == [1]) }
+        #expect(Calendar.current.component(.hour, from: start) == 7)
+    }
+
+    @Test func pickUpGroceriesSaturday() {
+        let result = parse("Pick up groceries Saturday")
+        guard case let .task(title, due, _) = result else {
+            Issue.record("Expected task, got \(result)"); return
+        }
+        #expect(title.localizedCaseInsensitiveContains("pick up groceries"))
+        #expect(due != nil)
+        if let due { #expect(Calendar.current.component(.weekday, from: due) == 7) }
+    }
+
+    @Test func callMomThisWeekend() {
+        // No specific time → task. `due` may or may not be present;
+        // the test only requires it to be classified as a task.
+        let result = parse("Call mom this weekend")
+        if case .task(let title, _, _) = result {
+            #expect(title.localizedCaseInsensitiveContains("call"))
+        } else {
+            Issue.record("Expected task, got \(result)")
+        }
+    }
+
+    // MARK: - Category inference
+
+    @Test func categoryInference() {
+        let work = ParserCategory(id: UUID(), name: "Work")
+        let result = NLParser.parse("Working Monday 9am to 5pm",
+                                    now: fixedNow,
+                                    categories: [work])
+        if case let .event(_, _, _, _, cat) = result {
+            #expect(cat == work.id)
+        } else {
+            Issue.record("Expected event")
+        }
+    }
+
+    // MARK: - Empty input
+
+    @Test func emptyInputErrors() {
+        let result = parse("   ")
+        if case .error = result {} else {
+            Issue.record("Expected error, got \(result)")
+        }
+    }
+}
+
+// MARK: - Recurrence expansion tests
+
+@MainActor
+struct RecurrenceTests {
+    @Test func nonRecurringSingleInstance() {
+        let cal = Calendar.current
+        let start = cal.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 9))!
+        let end   = cal.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 10))!
+        let event = Event(title: "Standup",
+                          startDate: start,
+                          endDate: end)
+        let from = cal.date(from: DateComponents(year: 2026, month: 5, day: 1))!
+        let to   = cal.date(from: DateComponents(year: 2026, month: 5, day: 8))!
+        let instances = Recurrence_.instances(of: event, from: from, to: to)
+        #expect(instances.count == 1)
+    }
+
+    @Test func weeklyExpands() {
+        let cal = Calendar.current
+        let start = cal.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 11))!
+        let end   = cal.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 14))!
+        let event = Event(title: "Class",
+                          startDate: start,
+                          endDate: end,
+                          recurrenceEnabled: true,
+                          recurrenceByDay: [1, 3])   // Mon + Wed
+        let from = cal.date(from: DateComponents(year: 2026, month: 5, day: 4))!
+        let to   = cal.date(from: DateComponents(year: 2026, month: 5, day: 18))!
+        let instances = Recurrence_.instances(of: event, from: from, to: to)
+        // 2 weeks × 2 days = 4 instances.
+        #expect(instances.count == 4)
+    }
 }
