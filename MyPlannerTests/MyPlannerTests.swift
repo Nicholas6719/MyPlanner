@@ -209,6 +209,52 @@ struct NLParserTests {
             Issue.record("'7 a' should not be parsed as a time")
         }
     }
+
+    // MARK: - Past-time inputs should land on the right day
+
+    /// fixedNow is Sunday May 3 2026 at 09:00. A bare "5a-6a" is in the
+    /// past (5–6am < 9am), so the parser should schedule it for TOMORROW,
+    /// not 7 days from now.
+    @Test func timeOnlyInPastBumpsToTomorrow() {
+        let result = parse("Gym 5a-6a")
+        guard case let .event(_, start, end, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        // Tomorrow = May 4 (Monday)
+        #expect(cal.component(.month, from: start) == 5)
+        #expect(cal.component(.day, from: start) == 4)
+        #expect(cal.component(.hour, from: start) == 5)
+        #expect(cal.component(.hour, from: end) == 6)
+    }
+
+    /// "Working Monday 7am to 3:30pm" — when fixedNow is a Sunday, the
+    /// next Monday is tomorrow (May 4). Make sure the start is on that
+    /// Monday and never lands on a previous Monday.
+    @Test func weekdayEventGoesToNextOccurrence() {
+        let result = parse("Working Monday 7am to 3:30pm")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        // May 4 2026 is a Monday.
+        #expect(cal.component(.month, from: start) == 5)
+        #expect(cal.component(.day, from: start) == 4)
+        #expect(cal.component(.weekday, from: start) == 2)   // Monday = 2
+    }
+
+    /// "Gym 11pm" at fixedNow 9am — 11pm is still in the future today,
+    /// so we should NOT bump.
+    @Test func timeOnlyInFutureStaysToday() {
+        let result = parse("Gym 11pm")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.month, from: start) == 5)
+        #expect(cal.component(.day, from: start) == 3)        // today
+        #expect(cal.component(.hour, from: start) == 23)
+    }
 }
 
 // MARK: - Recurrence expansion tests

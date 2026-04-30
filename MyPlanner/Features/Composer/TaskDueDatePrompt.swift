@@ -9,8 +9,25 @@
 
 import SwiftUI
 
+enum DatePromptKind {
+    case task     // "When is this due?"
+    case event    // "When is this happening?"
+
+    var navigationTitle: String {
+        switch self {
+        case .task:  return "When is this due?"
+        case .event: return "When is this happening?"
+        }
+    }
+
+    var subtitle: String {
+        "Pick a date or save without one."
+    }
+}
+
 struct TaskDueDatePrompt: View {
     let title: String
+    var kind: DatePromptKind = .task
     let onCommit: (Date?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -32,7 +49,7 @@ struct TaskDueDatePrompt: View {
             }
             .padding(Theme.Spacing.outer)
             .background(Theme.bg)
-            .navigationTitle("When is this due?")
+            .navigationTitle(kind.navigationTitle)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -58,7 +75,7 @@ struct TaskDueDatePrompt: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Theme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Pick a date or save without one.")
+            Text(kind.subtitle)
                 .font(.system(size: 12))
                 .foregroundStyle(Theme.inkDim)
                 .frame(maxWidth: .infinity, alignment: .leading)

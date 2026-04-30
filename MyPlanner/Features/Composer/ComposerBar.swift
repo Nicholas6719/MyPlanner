@@ -19,10 +19,12 @@ struct ComposerBar: View {
     @State private var parsed: ParsedInput?
     @FocusState private var focused: Bool
 
-    /// Holds a task that's pending a due-date decision. When non-nil, we
-    /// show the TaskDueDatePrompt sheet.
-    @State private var pendingTaskTitle: String?
-    @State private var pendingTaskCategory: UUID?
+    /// State for the date-prompt sheet. Shown when the user commits a
+    /// task without a date, or overrides Task → Event without a date —
+    /// in both cases we'd otherwise have to silently guess.
+    @State private var pendingTitle: String?
+    @State private var pendingCategory: UUID?
+    @State private var pendingKind: DatePromptKind = .task
     @State private var showDuePrompt = false
 
     var body: some View {
@@ -51,17 +53,54 @@ struct ComposerBar: View {
         }
         .animation(.easeOut(duration: 0.18), value: text.isEmpty)
         .sheet(isPresented: $showDuePrompt) {
-            TaskDueDatePrompt(title: pendingTaskTitle ?? "") { date in
-                if let title = pendingTaskTitle {
-                    insertTask(title: title,
-                               due: date,
-                               category: pendingTaskCategory)
+            TaskDueDatePrompt(
+                title: pendingTitle ?? "",
+                kind: pendingKind
+            ) { date in
+                if let title = pendingTitle {
+                    switch pendingKind {
+                    case .task:
+                        insertTask(title: title,
+                                   due: date,
+                                   category: pendingCategory)
+                    case .event:
+                        // Default a chosen date to 9am for 1 hour. If
+                        // they picked nil ("save without date"), fall
+                        // back to next-hour-from-now.
+                        let start: Date = {
+                            if let d = date {
+                                var comps = Calendar.current
+                                    .dateComponents([.year, .month, .day], from: d)
+                                comps.hour = 9
+                                comps.minute = 0
+                                return Calendar.current.date(from: comps) ?? d
+                            }
+                            return Self.roundedHour(after: Date())
+                        }()
+                        insertEvent(title: title,
+                                    start: start,
+                                    end: start.addingTimeInterval(3600),
+                                    recurrence: nil,
+                                    category: pendingCategory,
+                                    sourceText: "")
+                    }
                     Task { await rescheduleNotifications() }
                 }
-                pendingTaskTitle = nil
-                pendingTaskCategory = nil
+                pendingTitle = nil
+                pendingCategory = nil
+                pendingKind = .task
             }
         }
+    }
+
+    /// Static helper used when the date prompt was dismissed without a
+    /// chosen date for an event override: fall back to the next round
+    /// hour from now.
+    private static func roundedHour(after now: Date) -> Date {
+        var comps = Calendar.current.dateComponents([.year, .month, .day, .hour], from: now)
+        comps.hour = (comps.hour ?? 0) + 1
+        comps.minute = 0
+        return Calendar.current.date(from: comps) ?? now.addingTimeInterval(3600)
     }
 
     private var inputRow: some View {
@@ -145,19 +184,28 @@ struct ComposerBar: View {
                         category: cat,
                         sourceText: originalText)
         case (.event, .task(let title, let due, let cat)):
-            // User overrode Task → Event. Use due as start, +1h as end.
-            let s = due ?? Date()
-            insertEvent(title: title,
-                        start: s,
-                        end: s.addingTimeInterval(3600),
-                        recurrence: nil,
-                        category: cat,
-                        sourceText: originalText)
+            // User overrode Task → Event. If we have a due date, use it
+            // as the start (1-hour duration). If we don't, ask the user
+            // when it's happening — we shouldn't silently guess.
+            if let s = due {
+                insertEvent(title: title,
+                            start: s,
+                            end: s.addingTimeInterval(3600),
+                            recurrence: nil,
+                            category: cat,
+                            sourceText: originalText)
+            } else {
+                pendingTitle = title
+                pendingCategory = cat
+                pendingKind = .event
+                showDuePrompt = true
+            }
         case (.task, .task(let title, let due, let cat)):
             if due == nil {
                 // Ask the user when the task is due before saving.
-                pendingTaskTitle = title
-                pendingTaskCategory = cat
+                pendingTitle = title
+                pendingCategory = cat
+                pendingKind = .task
                 showDuePrompt = true
             } else {
                 insertTask(title: title, due: due, category: cat,

@@ -194,21 +194,43 @@ struct NLParser {
                 start = nextOccurrence(of: byDay,
                                        from: now,
                                        timeOfDay: timeOfDay)
-            } else if let r = detectorResult {
-                // The detector found a date; if it didn't include a time
-                // but the regex did, overlay the time-of-day on its date.
+            } else if !weekdayMatches.isEmpty {
+                // Non-recurring but a weekday name was used (e.g.
+                // "Working Monday 7am"). Use the next future occurrence
+                // of that weekday — NSDataDetector sometimes returns the
+                // weekday in the past which is never what the user means.
+                let weekdays = Array(Set(weekdayMatches.map(\.idx))).sorted()
+                start = nextOccurrence(of: weekdays,
+                                       from: now,
+                                       timeOfDay: timeOfDay)
+            } else if let r = detectorResult, r.hasExplicitDate {
+                // The detector found a phrase with a real date marker
+                // (month name, "tomorrow", "11/15", etc.). Trust its date.
                 if !r.hasTime, let t = timeOfDay {
                     start = applying(timeOfDay: t, to: r.date) ?? r.date
                 } else {
                     start = r.date
                 }
             } else if let t = timeOfDay {
-                // No date phrase but a time was found via regex (e.g.
-                // "workout 7a"). Apply the time to today.
-                start = applying(timeOfDay: t, to: now) ?? roundedHour(after: now)
+                // Only a time was found (no real date marker, even if
+                // NSDataDetector silently filled in today). Apply to
+                // today relative to `now`; if that already passed, use
+                // tomorrow.
+                start = applyTimeWithTodayOrTomorrowFallback(t, now: now)
+            } else if let r = detectorResult {
+                // Detector returned a time-only phrase that we didn't
+                // separately catch via regex (e.g. odd formats). Fall
+                // back to the detector's date and apply the same
+                // today/tomorrow rule.
+                if r.date < now, Calendar.current.isDate(r.date, inSameDayAs: now) {
+                    start = r.date.addingTimeInterval(24 * 3600)
+                } else {
+                    start = r.date
+                }
             } else {
                 // No date AND no time AND no recurrence — fall back to
-                // now + 1h, on the hour.
+                // now + 1h, on the hour. The composer also offers an
+                // event-date prompt for this case.
                 start = roundedHour(after: now)
             }
             let end = start.addingTimeInterval(duration)
@@ -223,19 +245,33 @@ struct NLParser {
         } else {
             // Task — `due` may be nil if no date phrase was detected.
             //
-            // We prefer a weekday-name match over NSDataDetector's date for
-            // bare phrases like "due Friday", because NSDataDetector
-            // sometimes returns the day-before-midnight when given a bare
-            // weekday word, which throws off the weekday by one.
+            // We mirror the event-side logic: prefer weekday-name matches,
+            // trust the detector only when it carries a real date marker,
+            // and fall back to the time-only-with-today-or-tomorrow rule
+            // otherwise.
             var due: Date?
-            if let detector = detectorResult {
-                if !weekdayMatches.isEmpty, !detector.hasTime {
-                    let targetWeekdays = Array(Set(weekdayMatches.map(\.idx))).sorted()
-                    due = nextOccurrence(of: targetWeekdays, from: now, timeOfDay: nil)
+            if !weekdayMatches.isEmpty {
+                let targetWeekdays = Array(Set(weekdayMatches.map(\.idx))).sorted()
+                let timeOfDay: TimeOfDay? = timeMatches.first?.tod
+                    ?? detectorResult.flatMap { r in r.hasTime ? TimeOfDay(date: r.date) : nil }
+                due = nextOccurrence(of: targetWeekdays,
+                                     from: now,
+                                     timeOfDay: timeOfDay)
+            } else if let r = detectorResult, r.hasExplicitDate {
+                due = r.date
+            } else if let t = timeMatches.first?.tod {
+                due = applyTimeWithTodayOrTomorrowFallback(t, now: now)
+            } else if let r = detectorResult {
+                // Detector returned a time-only phrase. Apply the same
+                // today/tomorrow rule.
+                if r.date < now, Calendar.current.isDate(r.date, inSameDayAs: now) {
+                    due = r.date.addingTimeInterval(24 * 3600)
                 } else {
-                    due = detector.date
+                    due = r.date
                 }
             }
+            // due stays nil when there's no date AND no time at all —
+            // the composer will prompt the user.
             return .task(title: title.isEmpty ? "Untitled" : title,
                          due: due,
                          categoryID: categoryID)
@@ -244,13 +280,25 @@ struct NLParser {
 
     // MARK: - Helpers
 
-    /// Wraps NSDataDetector output. `hasTime` tells us whether the user
-    /// actually included a time of day (vs just a bare date).
+    /// Wraps NSDataDetector output.
+    ///
+    /// - `hasTime`: whether the matched phrase included a time of day
+    ///   (vs just a bare date).
+    /// - `hasWeekdayName`: matched phrase contains "monday"/"fri"/etc.
+    /// - `hasExplicitDate`: matched phrase contains any concrete date
+    ///   reference — a weekday name, a month name, or a relative-day
+    ///   word like "tomorrow"/"today"/"tonight". When this is FALSE
+    ///   (pure-time phrase like "5a-6a"), the detector's `date` is just
+    ///   "today at that time" per NSDataDetector's *system* clock, and
+    ///   the caller should apply the time to its own `now` reference
+    ///   instead of trusting the detector's day component.
     private struct DetectorResult {
         let date: Date
         let duration: TimeInterval
         let range: Range<String.Index>
         let hasTime: Bool
+        let hasWeekdayName: Bool
+        let hasExplicitDate: Bool
     }
 
     private static func detectDate(in text: String, now: Date) -> DetectorResult? {
@@ -275,24 +323,34 @@ struct NLParser {
                    || (phrase.range(of: #"\b(noon|midnight)\b"#,
                                     options: .regularExpression) != nil)
 
-        // Adjust the detected date to be relative to `now` if the date
-        // looks like it might be in the past (NSDataDetector occasionally
-        // returns a past day-of-week if the current weekday is the same
-        // as the parsed weekday). Push forward by a week.
-        var resolved = date
-        if resolved < now.addingTimeInterval(-60) {
-            // Try +7 days first; if that overshoots into the future too far
-            // we leave it alone.
-            let plusWeek = resolved.addingTimeInterval(7 * 24 * 3600)
-            if plusWeek > now {
-                resolved = plusWeek
-            }
-        }
+        let hasWeekdayName = phrase.range(
+            of: #"\b(sun|sunday|mon|monday|tue|tues|tuesday|wed|weds|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday)\b"#,
+            options: .regularExpression) != nil
 
-        return DetectorResult(date: resolved,
+        let hasMonthName = phrase.range(
+            of: #"\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b"#,
+            options: .regularExpression) != nil
+        let hasRelativeDay = phrase.range(
+            of: #"\b(today|tomorrow|tonight|yesterday|next|this|last)\b"#,
+            options: .regularExpression) != nil
+        // Numeric date patterns: "11/15", "11-15-2026", "the 15th" etc.
+        let hasNumericDate = phrase.range(
+            of: #"\d{1,2}[/\-]\d{1,2}|\d{1,2}(st|nd|rd|th)\b"#,
+            options: .regularExpression) != nil
+        let hasExplicitDate = hasWeekdayName || hasMonthName
+                           || hasRelativeDay || hasNumericDate
+
+        // Don't auto-promote past dates here — let the caller decide.
+        // Previously we always added 7 days for any past date, which
+        // turned "Gym 5am" (past today) into "next week 5am" instead
+        // of "tomorrow 5am". The caller now has enough context to do
+        // the right thing.
+        return DetectorResult(date: date,
                               duration: m.duration,
                               range: swiftRange,
-                              hasTime: hasTime)
+                              hasTime: hasTime,
+                              hasWeekdayName: hasWeekdayName,
+                              hasExplicitDate: hasExplicitDate)
     }
 
     private struct WeekdayMatch {
@@ -578,6 +636,21 @@ struct NLParser {
             }
         }
         return best ?? now.addingTimeInterval(3600)
+    }
+
+    /// Apply a time-of-day to today (relative to `now`); if that's already
+    /// passed, apply to tomorrow. The "Gym 5a-6a at 5pm → tomorrow 5am"
+    /// rule the user requested.
+    private static func applyTimeWithTodayOrTomorrowFallback(
+        _ t: TimeOfDay, now: Date
+    ) -> Date {
+        let cal = Calendar.current
+        let today = applying(timeOfDay: t, to: now) ?? now
+        if today >= now {
+            return today
+        }
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
+        return applying(timeOfDay: t, to: tomorrow) ?? today.addingTimeInterval(24 * 3600)
     }
 
     /// Replace the hour/minute components of `date` with those of `timeOfDay`,
