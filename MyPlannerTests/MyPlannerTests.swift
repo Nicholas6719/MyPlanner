@@ -141,6 +141,74 @@ struct NLParserTests {
             Issue.record("Expected error, got \(result)")
         }
     }
+
+    // MARK: - Short AM/PM markers
+
+    @Test func shortAmMarker() {
+        let result = parse("workout 7a")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(Calendar.current.component(.hour, from: start) == 7)
+    }
+
+    @Test func shortPmMarker() {
+        let result = parse("call 3:30p tomorrow")
+        guard case let .event(_, start, _, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        #expect(Calendar.current.component(.hour, from: start) == 15)
+        #expect(Calendar.current.component(.minute, from: start) == 30)
+    }
+
+    @Test func mixedShortMarkers() {
+        let result = parse("Working Monday 7a to 3:30p")
+        guard case let .event(_, start, end, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 7)
+        #expect(cal.component(.hour, from: end) == 15)
+        #expect(cal.component(.minute, from: end) == 30)
+    }
+
+    // MARK: - Range without a connector
+
+    @Test func rangeWithoutToConnector() {
+        // "7am 3:30pm" — no "to" between the two times
+        let result = parse("Working Monday 7am 3:30pm")
+        guard case let .event(_, start, end, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 7)
+        #expect(cal.component(.hour, from: end) == 15)
+        #expect(cal.component(.minute, from: end) == 30)
+    }
+
+    @Test func rangeWithBareEndTime() {
+        // "7am 3:30" — the bare 3:30 should be promoted to PM since it
+        // comes after 7am and 3:30 < 7:00 in the morning would be silly.
+        let result = parse("Working Monday 7am 3:30")
+        guard case let .event(_, start, end, _, _) = result else {
+            Issue.record("Expected event, got \(result)"); return
+        }
+        let cal = Calendar.current
+        #expect(cal.component(.hour, from: start) == 7)
+        #expect(cal.component(.hour, from: end) == 15)
+        #expect(cal.component(.minute, from: end) == 30)
+    }
+
+    // MARK: - "7 a" should NOT match (avoids "7 days a week" false positive)
+
+    @Test func bareLetterAfterSpaceDoesNotMatch() {
+        // "Read for 7 a few times" — "7 a" should NOT be parsed as "7am".
+        // We expect this to be a Task with no time component (not an event).
+        let result = parse("Read for 7 a few times")
+        if case .event = result {
+            Issue.record("'7 a' should not be parsed as a time")
+        }
+    }
 }
 
 // MARK: - Recurrence expansion tests

@@ -36,12 +36,16 @@ struct RootShell: View {
     @State private var showSettings = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                topbar
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        VStack(spacing: 0) {
+            topbar
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // The composer sits in a bottom safe-area inset so SwiftUI
+        // automatically reserves space for it (no more overlap with the
+        // bottom of Week/Day/Tasks content) and so it lifts above the
+        // keyboard on iOS.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerBar()
         }
         .background(Theme.bg.ignoresSafeArea())

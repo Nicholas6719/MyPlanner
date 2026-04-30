@@ -154,7 +154,7 @@ struct NLParser {
             if let r = detectorResult, r.hasTime {
                 timeOfDay = TimeOfDay(date: r.date)
             } else if let first = timeMatches.first {
-                timeOfDay = first
+                timeOfDay = first.tod
             } else {
                 timeOfDay = nil
             }
@@ -166,9 +166,10 @@ struct NLParser {
                     return r.duration
                 }
                 // Otherwise: if we found two time-of-day matches via regex,
-                // treat them as a range.
+                // treat them as a range. (findTimeOfDay already promoted
+                // an ambiguous end-of-range to PM if it came before start.)
                 if timeMatches.count >= 2 {
-                    let s = timeMatches[0]; let e = timeMatches[1]
+                    let s = timeMatches[0].tod; let e = timeMatches[1].tod
                     let m1 = s.hour * 60 + s.minute
                     let m2 = e.hour * 60 + e.minute
                     if m2 > m1 { return TimeInterval((m2 - m1) * 60) }
@@ -194,9 +195,20 @@ struct NLParser {
                                        from: now,
                                        timeOfDay: timeOfDay)
             } else if let r = detectorResult {
-                start = r.date
+                // The detector found a date; if it didn't include a time
+                // but the regex did, overlay the time-of-day on its date.
+                if !r.hasTime, let t = timeOfDay {
+                    start = applying(timeOfDay: t, to: r.date) ?? r.date
+                } else {
+                    start = r.date
+                }
+            } else if let t = timeOfDay {
+                // No date phrase but a time was found via regex (e.g.
+                // "workout 7a"). Apply the time to today.
+                start = applying(timeOfDay: t, to: now) ?? roundedHour(after: now)
             } else {
-                // No date AND no recurrence — fall back to now + 1h, on the hour
+                // No date AND no time AND no recurrence — fall back to
+                // now + 1h, on the hour.
                 start = roundedHour(after: now)
             }
             let end = start.addingTimeInterval(duration)
@@ -400,58 +412,147 @@ struct NLParser {
         }
     }
 
-    /// Scan the text for time-of-day phrases like "7am", "11am", "3:30pm",
-    /// "14:00", "noon", "midnight". Returns matches in order of appearance.
-    /// Used as a fallback when NSDataDetector misses a time embedded in a
-    /// busy phrase like "every monday gym 7am".
-    private static func findTimeOfDay(in lower: String) -> [TimeOfDay] {
-        var results: [(idx: Int, tod: TimeOfDay)] = []
-        // 12-hour with am/pm
-        let p1 = #"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b"#
-        if let re = try? NSRegularExpression(pattern: p1) {
+    /// One time-of-day hit, including whether the user explicitly wrote an
+    /// AM/PM marker. The ambiguity flag matters because we sometimes need
+    /// to promote a bare "3:30" to PM (e.g. when it appears as the end of
+    /// the range "7am 3:30").
+    fileprivate struct TimeMatch {
+        let tod: TimeOfDay
+        let offset: Int       // character offset in the source string
+        let length: Int       // length of the matched substring
+        let ambiguous: Bool   // true = no explicit am/pm marker
+    }
+
+    /// Scan the text for time-of-day phrases. Recognizes:
+    ///   - 12-hour with full marker:    "7am", "11 am", "3:30pm"
+    ///   - 12-hour with short marker:   "7a", "3:30p"
+    ///   - 24-hour:                     "14:00", "3:30"   (ambiguous)
+    ///   - Word forms:                  "noon", "midnight"
+    ///
+    /// Used as a fallback / supplement to NSDataDetector, which sometimes
+    /// misses bare time phrases embedded in busy text.
+    private static func findTimeOfDay(in lower: String) -> [TimeMatch] {
+        var results: [TimeMatch] = []
+        // Track which character ranges are already covered so we don't
+        // emit two overlapping matches (e.g. the AM/PM regex AND the bare
+        // HH:MM regex both firing on "3:30pm").
+        var covered = [Bool](repeating: false, count: lower.count)
+        func markCovered(offset: Int, length: Int) {
+            for i in offset..<min(offset + length, covered.count) where i >= 0 {
+                covered[i] = true
+            }
+        }
+        func isCovered(offset: Int) -> Bool {
+            offset >= 0 && offset < covered.count && covered[offset]
+        }
+
+        // ---- 12-hour with am/pm/a/p ----
+        // Either (whitespace + am|pm)  OR  (no whitespace, am|pm|a|p).
+        // The no-whitespace branch is what makes "7a", "3:30p" work without
+        // catching false positives like "7 a" (which the with-space branch
+        // requires the full word for).
+        let p12 = #"\b(\d{1,2})(?::(\d{2}))?(?:\s+(am|pm)|(am|pm|a|p))\b"#
+        if let re = try? NSRegularExpression(pattern: p12) {
             let nsRange = NSRange(lower.startIndex..<lower.endIndex, in: lower)
             re.enumerateMatches(in: lower, range: nsRange) { m, _, _ in
                 guard let m, let r = Range(m.range, in: lower) else { return }
                 let hRange = Range(m.range(at: 1), in: lower)!
                 var h = Int(lower[hRange]) ?? 0
+                guard h >= 1 && h <= 12 else { return }   // 13am etc. is bogus
                 var min = 0
                 if m.range(at: 2).location != NSNotFound,
                    let mr = Range(m.range(at: 2), in: lower) {
                     min = Int(lower[mr]) ?? 0
                 }
-                let ampRange = Range(m.range(at: 3), in: lower)!
-                let ap = String(lower[ampRange])
-                if ap == "pm" && h != 12 { h += 12 }
-                if ap == "am" && h == 12 { h = 0 }
+                let marker: String = {
+                    if m.range(at: 3).location != NSNotFound,
+                       let r3 = Range(m.range(at: 3), in: lower) {
+                        return String(lower[r3])
+                    }
+                    if m.range(at: 4).location != NSNotFound,
+                       let r4 = Range(m.range(at: 4), in: lower) {
+                        return String(lower[r4])
+                    }
+                    return ""
+                }()
+                let isPM = marker.hasPrefix("p")
+                if isPM && h != 12 { h += 12 }
+                if !isPM && h == 12 { h = 0 }
                 let off = lower.distance(from: lower.startIndex, to: r.lowerBound)
-                results.append((off, TimeOfDay(hour: h, minute: min)))
+                let len = lower.distance(from: r.lowerBound, to: r.upperBound)
+                results.append(TimeMatch(
+                    tod: TimeOfDay(hour: h, minute: min),
+                    offset: off,
+                    length: len,
+                    ambiguous: false
+                ))
+                markCovered(offset: off, length: len)
             }
         }
-        // 24-hour HH:MM (only if no am/pm match in the same range)
-        let p2 = #"\b([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*(am|pm))"#
-        if let re = try? NSRegularExpression(pattern: p2) {
+
+        // ---- 24-hour HH:MM (also matches bare "3:30" as 03:30 AM-ish) ----
+        // We mark these ambiguous; downstream logic may promote them to PM
+        // when they appear as the second half of a range ("7am 3:30").
+        let p24 = #"\b([01]?\d|2[0-3]):([0-5]\d)\b"#
+        if let re = try? NSRegularExpression(pattern: p24) {
             let nsRange = NSRange(lower.startIndex..<lower.endIndex, in: lower)
             re.enumerateMatches(in: lower, range: nsRange) { m, _, _ in
                 guard let m, let r = Range(m.range, in: lower) else { return }
+                let off = lower.distance(from: lower.startIndex, to: r.lowerBound)
+                if isCovered(offset: off) { return }     // already matched as 12h
                 let hRange = Range(m.range(at: 1), in: lower)!
                 let mr     = Range(m.range(at: 2), in: lower)!
                 let h = Int(lower[hRange]) ?? 0
                 let min = Int(lower[mr]) ?? 0
-                let off = lower.distance(from: lower.startIndex, to: r.lowerBound)
-                results.append((off, TimeOfDay(hour: h, minute: min)))
+                let len = lower.distance(from: r.lowerBound, to: r.upperBound)
+                // 24-hour values >= 13 unambiguously locate the hour;
+                // values 1..12 are ambiguous (could be AM or PM).
+                let ambiguous = (h >= 1 && h <= 12)
+                results.append(TimeMatch(
+                    tod: TimeOfDay(hour: h, minute: min),
+                    offset: off,
+                    length: len,
+                    ambiguous: ambiguous
+                ))
+                markCovered(offset: off, length: len)
             }
         }
-        // Word forms
+
+        // ---- Word forms ----
         if let r = lower.range(of: #"\bnoon\b"#, options: .regularExpression) {
             let off = lower.distance(from: lower.startIndex, to: r.lowerBound)
-            results.append((off, TimeOfDay(hour: 12, minute: 0)))
+            let len = lower.distance(from: r.lowerBound, to: r.upperBound)
+            results.append(TimeMatch(tod: TimeOfDay(hour: 12, minute: 0),
+                                     offset: off, length: len, ambiguous: false))
         }
         if let r = lower.range(of: #"\bmidnight\b"#, options: .regularExpression) {
             let off = lower.distance(from: lower.startIndex, to: r.lowerBound)
-            results.append((off, TimeOfDay(hour: 0, minute: 0)))
+            let len = lower.distance(from: r.lowerBound, to: r.upperBound)
+            results.append(TimeMatch(tod: TimeOfDay(hour: 0, minute: 0),
+                                     offset: off, length: len, ambiguous: false))
         }
-        results.sort { $0.idx < $1.idx }
-        return results.map(\.tod)
+
+        results.sort { $0.offset < $1.offset }
+
+        // Range disambiguation: if we have an unambiguous start and an
+        // ambiguous end whose hour-of-day comes BEFORE the start, the user
+        // almost certainly meant PM. Promote the end (and any subsequent
+        // ambiguous matches) by 12 hours.
+        if results.count >= 2,
+           !results[0].ambiguous,
+           results[1].ambiguous {
+            let startMin = results[0].tod.hour * 60 + results[0].tod.minute
+            let endMin   = results[1].tod.hour * 60 + results[1].tod.minute
+            if endMin < startMin && results[1].tod.hour < 12 {
+                let promoted = TimeOfDay(hour: results[1].tod.hour + 12,
+                                         minute: results[1].tod.minute)
+                results[1] = TimeMatch(tod: promoted,
+                                       offset: results[1].offset,
+                                       length: results[1].length,
+                                       ambiguous: false)
+            }
+        }
+        return results
     }
 
     /// For recurring events, find the next future date (>= now) whose
@@ -477,6 +578,17 @@ struct NLParser {
             }
         }
         return best ?? now.addingTimeInterval(3600)
+    }
+
+    /// Replace the hour/minute components of `date` with those of `timeOfDay`,
+    /// keeping the calendar day intact.
+    private static func applying(timeOfDay t: TimeOfDay, to date: Date) -> Date? {
+        let cal = Calendar.current
+        var comps = cal.dateComponents([.year, .month, .day], from: date)
+        comps.hour = t.hour
+        comps.minute = t.minute
+        comps.second = 0
+        return cal.date(from: comps)
     }
 
     private static func roundedHour(after now: Date) -> Date {

@@ -75,7 +75,7 @@ struct TasksView: View {
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.outer)
-                .padding(.bottom, 80)   // breathing room above the composer
+                .padding(.bottom, 8)
             }
         }
     }

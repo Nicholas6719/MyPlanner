@@ -19,6 +19,12 @@ struct ComposerBar: View {
     @State private var parsed: ParsedInput?
     @FocusState private var focused: Bool
 
+    /// Holds a task that's pending a due-date decision. When non-nil, we
+    /// show the TaskDueDatePrompt sheet.
+    @State private var pendingTaskTitle: String?
+    @State private var pendingTaskCategory: UUID?
+    @State private var showDuePrompt = false
+
     var body: some View {
         VStack(spacing: 8) {
             if !text.isEmpty, let parsed {
@@ -44,6 +50,18 @@ struct ComposerBar: View {
             recomputePreview(new)
         }
         .animation(.easeOut(duration: 0.18), value: text.isEmpty)
+        .sheet(isPresented: $showDuePrompt) {
+            TaskDueDatePrompt(title: pendingTaskTitle ?? "") { date in
+                if let title = pendingTaskTitle {
+                    insertTask(title: title,
+                               due: date,
+                               category: pendingTaskCategory)
+                    Task { await rescheduleNotifications() }
+                }
+                pendingTaskTitle = nil
+                pendingTaskCategory = nil
+            }
+        }
     }
 
     private var inputRow: some View {
@@ -111,55 +129,79 @@ struct ComposerBar: View {
             }
         }()
 
+        // Reset the input optimistically — user already pressed enter, so
+        // the bar should clear immediately. The pending-task prompt (if
+        // shown) carries the data forward.
+        let originalText = text
+        text = ""
+        typeOverride = nil
+        parsed = nil
+
         switch (finalKind, result) {
         case (.event, .event(let title, let s, let e, let recurrence, let cat)):
-            insertEvent(title: title, start: s, end: e, recurrence: recurrence, category: cat)
+            insertEvent(title: title,
+                        start: s, end: e,
+                        recurrence: recurrence,
+                        category: cat,
+                        sourceText: originalText)
         case (.event, .task(let title, let due, let cat)):
             // User overrode Task → Event. Use due as start, +1h as end.
             let s = due ?? Date()
-            insertEvent(title: title, start: s, end: s.addingTimeInterval(3600),
-                        recurrence: nil, category: cat)
+            insertEvent(title: title,
+                        start: s,
+                        end: s.addingTimeInterval(3600),
+                        recurrence: nil,
+                        category: cat,
+                        sourceText: originalText)
         case (.task, .task(let title, let due, let cat)):
-            insertTask(title: title, due: due, category: cat)
+            if due == nil {
+                // Ask the user when the task is due before saving.
+                pendingTaskTitle = title
+                pendingTaskCategory = cat
+                showDuePrompt = true
+            } else {
+                insertTask(title: title, due: due, category: cat,
+                           sourceText: originalText)
+            }
         case (.task, .event(let title, let s, _, _, let cat)):
             // User overrode Event → Task. Use start as due.
-            insertTask(title: title, due: s, category: cat)
+            insertTask(title: title, due: s, category: cat,
+                       sourceText: originalText)
         default:
             break
         }
 
-        // Re-schedule notifications now that we've added something.
+        // Re-schedule notifications now that we've added something. (When
+        // the due-date sheet is shown, we re-schedule again after the user
+        // confirms, since that's the actual insert moment.)
         Task { await rescheduleNotifications() }
-
-        // Reset.
-        text = ""
-        typeOverride = nil
-        parsed = nil
     }
 
     private func insertEvent(title: String,
                              start: Date,
                              end: Date,
                              recurrence: Recurrence?,
-                             category: UUID?) {
+                             category: UUID?,
+                             sourceText: String) {
         let event = Event(title: title,
                           startDate: start,
                           endDate: end,
                           categoryID: category,
                           recurrenceEnabled: recurrence != nil,
                           recurrenceByDay: recurrence?.byDay ?? [],
-                          sourceText: text)
+                          sourceText: sourceText)
         modelContext.insert(event)
         try? modelContext.save()
     }
 
     private func insertTask(title: String,
                             due: Date?,
-                            category: UUID?) {
+                            category: UUID?,
+                            sourceText: String = "") {
         let task = TaskItem(title: title,
                             dueDate: due,
                             categoryID: category,
-                            sourceText: text)
+                            sourceText: sourceText)
         modelContext.insert(task)
         try? modelContext.save()
     }

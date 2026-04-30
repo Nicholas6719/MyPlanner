@@ -37,13 +37,10 @@ struct TaskEditorView: View {
                 }
 
                 Section("Details") {
-                    Picker("Category", selection: Binding(
-                        get: { task.categoryID ?? UUID() },
-                        set: { task.categoryID = ($0 == UUID() ? nil : $0) }
-                    )) {
-                        Text("None").tag(UUID())
+                    Picker("Category", selection: $task.categoryID) {
+                        Text("None").tag(UUID?.none)
                         ForEach(categories) { c in
-                            Text(c.name).tag(c.id)
+                            Text(c.name).tag(UUID?.some(c.id))
                         }
                     }
                     SegmentedToggle(

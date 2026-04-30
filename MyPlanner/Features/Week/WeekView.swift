@@ -35,11 +35,16 @@ struct WeekView: View {
         }
         .background(Theme.bg)
         .onReceive(nowTimer) { _ in now = Date() }
-        .gesture(
+        // simultaneousGesture so we don't steal vertical scrolls from the
+        // hour grid; we only act on swipes that are clearly horizontal.
+        .simultaneousGesture(
             DragGesture(minimumDistance: 30)
                 .onEnded { value in
-                    if value.translation.width < -50 { goToWeek(offset: 1) }
-                    else if value.translation.width > 50 { goToWeek(offset: -1) }
+                    let dx = value.translation.width
+                    let dy = value.translation.height
+                    guard abs(dx) > abs(dy) * 1.5 else { return }
+                    if dx < -50 { goToWeek(offset: 1) }
+                    else if dx > 50 { goToWeek(offset: -1) }
                 }
         )
         .sheet(item: $editingEvent) { event in

@@ -96,13 +96,13 @@ struct EventEditorView: View {
 
     private var detailsSection: some View {
         Section("Details") {
-            Picker("Category", selection: Binding(
-                get: { event.categoryID ?? UUID() },
-                set: { event.categoryID = ($0 == UUID() ? nil : $0) }
-            )) {
-                Text("None").tag(UUID())
+            // Picker selection uses an OPTIONAL UUID directly so "None" is
+            // simply `nil` and we don't need a sentinel. Picker handles
+            // optionals fine when every tag is `UUID?`.
+            Picker("Category", selection: $event.categoryID) {
+                Text("None").tag(UUID?.none)
                 ForEach(categories) { c in
-                    Text(c.name).tag(c.id)
+                    Text(c.name).tag(UUID?.some(c.id))
                 }
             }
             TextField("Notes / Location", text: $event.notes, axis: .vertical)
