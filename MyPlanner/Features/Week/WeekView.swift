@@ -22,6 +22,7 @@ struct WeekView: View {
     @State private var now: Date = Date()
     @State private var editingEvent: Event?
     @State private var newEventDraft: Event?
+    @State private var pendingDelete: Event?
 
     // 60-second tick for the "now" line
     private let nowTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -52,6 +53,21 @@ struct WeekView: View {
         }
         .sheet(item: $newEventDraft) { draft in
             EventEditorView(event: draft, isNew: true)
+        }
+        .alert("Delete this event?",
+               isPresented: Binding(get: { pendingDelete != nil },
+                                    set: { if !$0 { pendingDelete = nil } })) {
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button(pendingDelete?.recurrenceEnabled == true
+                   ? "Delete All" : "Delete",
+                   role: .destructive) {
+                if let e = pendingDelete { delete(e) }
+                pendingDelete = nil
+            }
+        } message: {
+            Text(pendingDelete?.recurrenceEnabled == true
+                 ? "Delete this event and all repeats?"
+                 : "This cannot be undone.")
         }
     }
 
@@ -116,7 +132,8 @@ struct WeekView: View {
                         categories: categories,
                         now: now,
                         onTapHour: handleTapHour,
-                        onTapEvent: handleTapEvent)
+                        onTapEvent: handleTapEvent,
+                        onDeleteEvent: handleDeleteEvent)
     }
 
     // MARK: - Actions
@@ -137,6 +154,22 @@ struct WeekView: View {
     private func handleTapEvent(_ inst: EventInstance) {
         if let event = events.first(where: { $0.id == inst.eventID }) {
             editingEvent = event
+        }
+    }
+
+    private func handleDeleteEvent(_ inst: EventInstance) {
+        if let event = events.first(where: { $0.id == inst.eventID }) {
+            pendingDelete = event
+        }
+    }
+
+    private func delete(_ event: Event) {
+        modelContext.delete(event)
+        try? modelContext.save()
+        Task {
+            let events = (try? modelContext.fetch(FetchDescriptor<Event>())) ?? []
+            let tasks = (try? modelContext.fetch(FetchDescriptor<TaskItem>())) ?? []
+            await NotificationScheduler.reschedule(events: events, tasks: tasks)
         }
     }
 

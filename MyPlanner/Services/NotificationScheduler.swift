@@ -46,9 +46,16 @@ enum NotificationScheduler {
     // MARK: - Scheduling
 
     /// Cancel every notification owned by this app and then re-schedule
-    /// from the current event/task state.
+    /// from the current event/task state. Also updates the app icon badge
+    /// to reflect the count of incomplete tasks that are due today or
+    /// already overdue, so the user sees a passive reminder on their home
+    /// screen / Dock.
     static func reschedule(events: [Event],
                            tasks: [TaskItem]) async {
+        // Always update the badge — even if notifications aren't authorized
+        // (in which case setBadgeCount silently no-ops, which is fine).
+        await updateBadge(tasks: tasks)
+
         let status = await currentStatus()
         guard status == .authorized || status == .provisional else {
             // No permission yet — nothing to do. We won't pester the user
@@ -99,6 +106,27 @@ enum NotificationScheduler {
                                           isEvent: true)
                 schedule(id: id, content: content, fire: fire)
             }
+        }
+    }
+
+    // MARK: - Badge
+
+    /// Update the app icon badge to reflect Today + Overdue task count.
+    /// Counts only incomplete tasks. Silently no-ops if the user hasn't
+    /// authorized badges.
+    private static func updateBadge(tasks: [TaskItem]) async {
+        let cal = Calendar.current
+        let now = Date()
+        let today = cal.startOfDay(for: now)
+        let count = tasks.filter { task in
+            guard !task.completed, let due = task.dueDate else { return false }
+            return cal.startOfDay(for: due) <= today
+        }.count
+        do {
+            try await UNUserNotificationCenter.current().setBadgeCount(count)
+        } catch {
+            // Not authorized for badges, or another transient issue.
+            // Nothing useful to do; the badge just won't update.
         }
     }
 

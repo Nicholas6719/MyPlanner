@@ -85,9 +85,10 @@ struct RootShell: View {
 
             Spacer()
 
-            // Segmented tab selector
+            // Segmented tab selector. ⌘1 / ⌘2 / ⌘3 switch tabs on macOS
+            // and on iPad/iPhone with an external keyboard.
             HStack(spacing: 2) {
-                ForEach(MainTab.allCases) { t in
+                ForEach(Array(MainTab.allCases.enumerated()), id: \.element) { idx, t in
                     Button {
                         tab = t
                     } label: {
@@ -102,6 +103,8 @@ struct RootShell: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .keyboardShortcut(KeyEquivalent(Character("\(idx + 1)")),
+                                      modifiers: .command)
                 }
             }
             .padding(3)
@@ -120,6 +123,7 @@ struct RootShell: View {
                     .background(Circle().fill(Theme.surface2))
             }
             .buttonStyle(.plain)
+            .keyboardShortcut(",", modifiers: .command)
         }
         .padding(.horizontal, Theme.Spacing.outer)
         .frame(height: Theme.topbarHeight)

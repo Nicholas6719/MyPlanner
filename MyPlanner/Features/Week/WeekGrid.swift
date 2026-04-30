@@ -19,6 +19,7 @@ struct WeekGrid: View {
     let now: Date
     let onTapHour: (Date) -> Void   // (hour-start date) → action
     let onTapEvent: (EventInstance) -> Void
+    let onDeleteEvent: (EventInstance) -> Void
 
     // Visual constants
     private let hourHeight: CGFloat = 44
@@ -161,6 +162,22 @@ struct WeekGrid: View {
                         .offset(x: CGFloat(dayIndex) * columnWidth + 1,
                                 y: frame.y)
                         .onTapGesture { onTapEvent(inst) }
+                        .contextMenu {
+                            Button {
+                                onTapEvent(inst)
+                            } label: {
+                                Label("Edit", systemImage: "square.and.pencil")
+                            }
+                            Divider()
+                            Button(role: .destructive) {
+                                onDeleteEvent(inst)
+                            } label: {
+                                Label(inst.isRecurring
+                                      ? "Delete All Repeats"
+                                      : "Delete Event",
+                                      systemImage: "trash")
+                            }
+                        }
                 }
             }
         }

@@ -24,6 +24,7 @@ struct DayView: View {
     @State private var editingEvent: Event?
     @State private var newEventDraft: Event?
     @State private var editingTask: TaskItem?
+    @State private var pendingDelete: Event?
 
     private let nowTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
     private let cal = Calendar.current
@@ -53,6 +54,31 @@ struct DayView: View {
         .sheet(item: $editingEvent) { e in EventEditorView(event: e, isNew: false) }
         .sheet(item: $newEventDraft) { e in EventEditorView(event: e, isNew: true) }
         .sheet(item: $editingTask)  { t in TaskEditorView(task: t, isNew: false) }
+        .alert("Delete this event?",
+               isPresented: Binding(get: { pendingDelete != nil },
+                                    set: { if !$0 { pendingDelete = nil } })) {
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button(pendingDelete?.recurrenceEnabled == true
+                   ? "Delete All" : "Delete",
+                   role: .destructive) {
+                if let e = pendingDelete { delete(e) }
+                pendingDelete = nil
+            }
+        } message: {
+            Text(pendingDelete?.recurrenceEnabled == true
+                 ? "Delete this event and all repeats?"
+                 : "This cannot be undone.")
+        }
+    }
+
+    private func delete(_ event: Event) {
+        modelContext.delete(event)
+        try? modelContext.save()
+        Task {
+            let events = (try? modelContext.fetch(FetchDescriptor<Event>())) ?? []
+            let tasks = (try? modelContext.fetch(FetchDescriptor<TaskItem>())) ?? []
+            await NotificationScheduler.reschedule(events: events, tasks: tasks)
+        }
     }
 
     // MARK: - Header
@@ -213,6 +239,26 @@ struct DayView: View {
                     .onTapGesture {
                         if let e = events.first(where: { $0.id == inst.eventID }) {
                             editingEvent = e
+                        }
+                    }
+                    .contextMenu {
+                        Button {
+                            if let e = events.first(where: { $0.id == inst.eventID }) {
+                                editingEvent = e
+                            }
+                        } label: {
+                            Label("Edit", systemImage: "square.and.pencil")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            if let e = events.first(where: { $0.id == inst.eventID }) {
+                                pendingDelete = e
+                            }
+                        } label: {
+                            Label(inst.isRecurring
+                                  ? "Delete All Repeats"
+                                  : "Delete Event",
+                                  systemImage: "trash")
                         }
                     }
             }
