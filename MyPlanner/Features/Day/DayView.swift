@@ -19,7 +19,9 @@ struct DayView: View {
     @AppStorage(AppSettingsKeys.hourRangeStart) private var hourStart: Int = AppSettingsDefaults.hourRangeStart
     @AppStorage(AppSettingsKeys.hourRangeEnd) private var hourEnd: Int = AppSettingsDefaults.hourRangeEnd
 
-    @State private var day: Date = Calendar.current.startOfDay(for: Date())
+    /// The currently displayed day. Lifted to RootShell so the Month view
+    /// can hand the user a specific day and have it land here.
+    @Binding var day: Date
     @State private var now: Date = Date()
     @State private var editingEvent: Event?
     @State private var newEventDraft: Event?

@@ -17,10 +17,14 @@ import SwiftUI
 import SwiftData
 
 enum MainTab: String, CaseIterable, Identifiable {
-    case week, day, tasks
+    // Order matches keyboard shortcuts: ⌘1 = Month, ⌘2 = Week, ⌘3 = Day,
+    // ⌘4 = Tasks. Listed zoomed-out → zoomed-in to mirror Apple's
+    // Calendar conventions (Year → Month → Week → Day).
+    case month, week, day, tasks
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .month: return "Month"
         case .week:  return "Week"
         case .day:   return "Day"
         case .tasks: return "Tasks"
@@ -31,9 +35,16 @@ enum MainTab: String, CaseIterable, Identifiable {
 struct RootShell: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    #endif
 
     @State private var tab: MainTab = .week
     @State private var showSettings = false
+
+    /// Shared between Month and Day views: tapping a day in Month sets
+    /// this and switches to the Day tab.
+    @State private var selectedDay: Date = Calendar.current.startOfDay(for: Date())
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,9 +74,20 @@ struct RootShell: View {
 
     // MARK: - Topbar
 
+    /// On iPhone (compact horizontal size class) we hide the "Planner"
+    /// wordmark to give the 4-tab segmented control enough room without
+    /// wrapping. The accent dot still serves as the brand mark.
+    private var showsWordmark: Bool {
+        #if os(iOS)
+        return hSizeClass != .compact
+        #else
+        return true
+        #endif
+    }
+
     private var topbar: some View {
         HStack(spacing: 12) {
-            // Accent dot with soft glow + wordmark
+            // Accent dot with soft glow + (optional) wordmark
             HStack(spacing: 8) {
                 ZStack {
                     Circle()
@@ -77,10 +99,12 @@ struct RootShell: View {
                         .blur(radius: 8)
                         .allowsHitTesting(false)
                 }
-                Text("Planner")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Theme.ink)
-                    .headingKerning()
+                if showsWordmark {
+                    Text("Planner")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Theme.ink)
+                        .headingKerning()
+                }
             }
 
             Spacer()
@@ -95,8 +119,9 @@ struct RootShell: View {
                         Text(t.label)
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(tab == t ? Color.black : Theme.inkSecondary)
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 6)
+                            .fixedSize(horizontal: true, vertical: false)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(tab == t ? Theme.accent : Color.clear)
@@ -136,9 +161,15 @@ struct RootShell: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
-        case .week:  WeekView()
-        case .day:   DayView()
-        case .tasks: TasksView()
+        case .month:
+            MonthView(selectedDay: $selectedDay,
+                      onSelectDay: { tab = .day })
+        case .week:
+            WeekView()
+        case .day:
+            DayView(day: $selectedDay)
+        case .tasks:
+            TasksView()
         }
     }
 
